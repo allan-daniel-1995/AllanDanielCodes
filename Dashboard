@@ -1,0 +1,64 @@
+create or replace temp view _pedidos_andressa as
+with base_pedidos as (
+select
+sf.brand as marca,
+sf.trading_name as loja,
+replace(date_format(o.order_reference_date_local, 'dd-MM-yyyy'),'-', '/') as date,
+count(distinct case when o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.order_id end) pedidos_conc,
+count(distinct case when o.last_status in ("CANCELLED", "PLACED") then o.order_id end) pedidos_canc,
+count(distinct case when o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then  sf.frn_id end) rest,
+round(sum(case when o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.order_total end),3) gmv,
+round(sum(case when o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.order_total end)-sum(case when o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.delivery_info.delivery_fee end ),2) as gmv_sem_taxa,
+count(case when order_rankings.ranking_at_restaurant > 1 and o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.order_id end) recompra_rest,
+count(case when order_rankings.ranking_at_restaurant = 1 and o.last_status not in ("CANCELLED", "PLACED", "DECLINED")then o.order_id end) novos_rest,
+count(case when o.delivery_info.type = 'DELIVERY' and o.delivery_info.delivery_fee = 0 and o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.order_id
+           when o.delivery_info.type = 'DELIVERY' and o.delivery_info.delivery_fee = ifood_subsidy.delivery + merchant_subsidy.delivery + external_subsidy.delivery and o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.order_id end) as pedidos_taxa_gratis,
+count(case when lower(o.voucher_info.campaign.campaign_code) like '%voucherlight%' and o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.order_id end) as voucher_light,
+count(distinct case when o.last_status not in ("CANCELLED", "PLACED", "DECLINED") and o.ifood_subsidy.voucher > 0 and o.merchant_subsidy.voucher = 0 and o.external_subsidy.voucher = 0
+and (lower(o.voucher_info.campaign.campaign_code) not like 'crm%' and lower(o.voucher_info.campaign.campaign_code) not like '%kas') or upper(o.voucher_info.campaign.campaign_code) not like '%EXC%'
+then o.order_id end) as voucher_ifood,
+count(case when o.order_items_calculation.is_subsidy_promotion = 1 and (o.has_itemtag <> 1 or o.ifood_subsidy.delivery + o.merchant_subsidy.delivery <> 0) and o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.order_id end) as pedidos_promo,
+count(case when o.delivery_info.type = 'TAKEOUT' and o.last_status not in ("CANCELLED", "PLACED", "DECLINED") then o.order_id end) as pedidos_pra_retirar,
+round(sum(t.planned_real)) as tempo_planejado,
+round(sum(t.online_real)) as tempo_online_real,
+avg(s.review_score) as avaliacao
+from order_curated.orders  as o
+join salesforce_curated.account as sf on o.merchant_info.frn_id = sf.frn_id
+join merchant_curated.restaurant_availability_status as t on o.merchant_info.frn_id = t.frn_id
+join order_curated.reviews as s on o.order_id = s.order_id
+where brand in ("Divino Fogão","Divino Fogão - Dk")
+and o.merchant_info.address.country_label = 'BR'
+and o.order_reference_date_local >= '2022-06-01' and o.order_reference_date_local <= current_date - 1
+and s.dt >= '2022-06-01' and s.dt <= current_date - 1
+and t.date_format_partition >= '2022-06-01' and t.date_format_partition <= current_date - 1
+and o.dt >= '2021-12-25' - interval 5 days
+group by 1,2,3
+order by 2 asc)
+select
+marca,
+loja,
+date,
+pedidos_conc,
+pedidos_canc,
+rest as Lojas_Ativas,
+gmv,
+replace (round (gmv / pedidos_conc,2), ".", ",") as Tm,
+gmv_sem_taxa,
+replace (round (gmv_sem_taxa / pedidos_conc,2), ".", ",") as Tm_sem_taxa,
+pedidos_taxa_gratis,
+voucher_light,
+voucher_ifood,
+pedidos_promo,
+pedidos_pra_retirar,
+recompra_rest,
+novos_rest,
+tempo_planejado,
+tempo_online_real,
+replace (round (tempo_online_real / tempo_planejado * 100,2), ".", ",") as Media_Temp_Online,
+avaliacao
+from base_pedidos
+
+%python
+from ifood_databricks.gcp import gsheet
+df_pedidos_andressa = spark.table('_pedidos_andressa')
+gsheet.gsheets_data_dump(df_pedidos_andressa, spreadsheet_id = '1ZLOS3oefaRlrke0ezG-vLP9iZvonhjMFW2z1QHhsDMs',range_sheet= 'pedidos!A1',title= True, clear = True)
